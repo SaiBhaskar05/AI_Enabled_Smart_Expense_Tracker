@@ -7,8 +7,23 @@ import pickle
 import re
 import numpy as np
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "models/model.pkl")
-VECTORIZER_PATH = os.environ.get("VECTORIZER_PATH", "models/vectorizer.pkl")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def get_model_path():
+    env_path = os.environ.get("MODEL_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    if os.path.exists("models/model.pkl"):
+        return "models/model.pkl"
+    return os.path.join(BASE_DIR, "models", "model.pkl")
+
+def get_vectorizer_path():
+    env_path = os.environ.get("VECTORIZER_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    if os.path.exists("models/vectorizer.pkl"):
+        return "models/vectorizer.pkl"
+    return os.path.join(BASE_DIR, "models", "vectorizer.pkl")
 
 _model = None
 _vectorizer = None
@@ -16,9 +31,11 @@ _vectorizer = None
 def load_model():
     global _model, _vectorizer
     if _model is None:
-        with open(MODEL_PATH, 'rb') as f:
+        model_p = get_model_path()
+        vec_p = get_vectorizer_path()
+        with open(model_p, 'rb') as f:
             _model = pickle.load(f)
-        with open(VECTORIZER_PATH, 'rb') as f:
+        with open(vec_p, 'rb') as f:
             _vectorizer = pickle.load(f)
     return _model, _vectorizer
 

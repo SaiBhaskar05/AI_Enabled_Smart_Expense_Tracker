@@ -14,7 +14,11 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from predict import predict
+
+try:
+    from predict import predict
+except ImportError:
+    from ml.predict import predict
 
 app = FastAPI(
     title="Expense Category Predictor",
@@ -59,7 +63,16 @@ def predict_category(req: PredictRequest):
 
 @app.get("/metrics")
 def get_metrics():
-    metrics_path = os.environ.get("METRICS_PATH", "models/metrics.json")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    metrics_path = os.environ.get("METRICS_PATH")
+    if not metrics_path or not os.path.exists(metrics_path):
+        if os.path.exists("models/metrics.json"):
+            metrics_path = "models/metrics.json"
+        elif os.path.exists(os.path.join(BASE_DIR, "models", "metrics.json")):
+            metrics_path = os.path.join(BASE_DIR, "models", "metrics.json")
+        else:
+            metrics_path = "models/metrics.json"
+
     if not os.path.exists(metrics_path):
         raise HTTPException(status_code=404, detail="Model not trained yet. Run 'python train.py' first.")
     with open(metrics_path, 'r') as f:
