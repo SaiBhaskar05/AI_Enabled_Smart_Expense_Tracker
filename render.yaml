@@ -1,0 +1,53 @@
+services:
+  # Python ML Prediction Microservice
+  - type: web
+    name: smart-expense-ml
+    env: python
+    region: oregon
+    plan: free
+    rootDir: ml
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+  # Node.js Express API Backend
+  - type: web
+    name: smart-expense-backend
+    env: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false # Set in Render Dashboard with your MongoDB Atlas URI
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE
+        value: 7d
+      - key: FRONTEND_URL
+        sync: false # Set to your Vercel/Netlify frontend URL (e.g. https://your-app.vercel.app)
+      - key: ML_API_URL
+        fromService:
+          type: web
+          name: smart-expense-ml
+          property: host
+      - key: GEMINI_API_KEY
+        sync: false # Get from https://aistudio.google.com/app/apikey
+      - key: EMAIL_HOST
+        value: smtp.gmail.com
+      - key: EMAIL_PORT
+        value: 587
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
