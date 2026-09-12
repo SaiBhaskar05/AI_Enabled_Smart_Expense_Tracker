@@ -41,6 +41,15 @@ class PredictResponse(BaseModel):
     confidence: float
     all_probabilities: dict = {}
 
+@app.get("/")
+def root():
+    return {
+        "status": "online",
+        "service": "Smart Expense Tracker ML Prediction API",
+        "version": "1.0.0",
+        "endpoints": ["/health", "/predict", "/metrics"]
+    }
+
 @app.get("/health")
 def health():
     return {"status": "healthy", "service": "expense-category-predictor"}
