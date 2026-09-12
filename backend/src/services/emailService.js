@@ -538,90 +538,6 @@ const sendViaBrevoApi = async ({ brevoApiKey, from, to, subject, html, user }) =
   return { messageId: res.data?.messageId || 'brevo-ok', provider: 'Brevo API' };
 };
 
-// Verify email service connection / diagnostics
-const verifyEmailTransporter = async () => {
-  const { user, pass, host, rawPort, resendApiKey, brevoApiKey } = getEmailCredentials();
-
-  // 1. If Resend API Key is configured
-  if (resendApiKey) {
-    try {
-      await axios.get('https://api.resend.com/api-keys', {
-        headers: { Authorization: `Bearer ${resendApiKey}` },
-        timeout: 8000
-      });
-      return {
-        ok: true,
-        message: 'Resend API connection verified successfully (Bypasses Render SMTP port blocks).',
-        host: 'api.resend.com',
-        user: 'Resend API'
-      };
-    } catch (e) {
-      return {
-        ok: false,
-        message: `Resend API key check failed: ${e.response?.data?.message || e.message}`
-      };
-    }
-  }
-
-  // 2. If Brevo API Key is configured
-  if (brevoApiKey) {
-    try {
-      await axios.get('https://api.brevo.com/v3/account', {
-        headers: { 'api-key': brevoApiKey },
-        timeout: 8000
-      });
-      return {
-        ok: true,
-        message: 'Brevo API connection verified successfully.',
-        host: 'api.brevo.com',
-        user: 'Brevo API'
-      };
-    } catch (e) {
-      return {
-        ok: false,
-        message: `Brevo API check failed: ${e.response?.data?.message || e.message}`
-      };
-    }
-  }
-
-  if (!user || !pass) {
-    return {
-      ok: false,
-      message: 'Email credentials not configured. Please set EMAIL_USER and EMAIL_PASSWORD (or RESEND_API_KEY) in Render environment variables.'
-    };
-  }
-
-  const chain = createTransporterChain();
-  const errors = [];
-
-  for (const item of chain) {
-    try {
-      await item.transporter.verify();
-      return {
-        ok: true,
-        message: `SMTP connection verified successfully using ${item.name}.`,
-        host: host || 'smtp.gmail.com',
-        user
-      };
-    } catch (err) {
-      console.warn(`⚠️ [${item.name}] verify failed:`, err.message);
-      errors.push(`${item.name}: ${err.code || err.message}`);
-    }
-  }
-
-  const isTimeout = errors.some(e => e.includes('ETIMEDOUT') || e.includes('timeout') || e.includes('ECONNREFUSED'));
-  let guidance = '';
-  if (isTimeout) {
-    guidance = ' Note: Render blocks standard SMTP ports (465 & 587). To fix this on Render, either: 1) Use an unblocked SMTP port like 2525 (e.g., Brevo SMTP: smtp-relay.brevo.com port 2525), or 2) Set RESEND_API_KEY in Render environment variables (Free 3,000 emails/mo at resend.com).';
-  }
-
-  return {
-    ok: false,
-    message: `SMTP verification failed across all attempted ports. (${errors.join(' | ')}).${guidance}`,
-    code: 'SMTP_UNREACHABLE'
-  };
-};
-
 // Send email helper with multi-transport cascading & API fallbacks
 const sendEmail = async (to, subject, html) => {
   const { user, pass, from, resendApiKey, brevoApiKey } = getEmailCredentials();
@@ -716,7 +632,6 @@ const sendReportToRecipient = async ({ to, recipientName, relationship, ownerId,
 
 module.exports = {
   sendEmail,
-  verifyEmailTransporter,
   generateDailySummary,
   generateWeeklySummary,
   generateMonthlySummary,

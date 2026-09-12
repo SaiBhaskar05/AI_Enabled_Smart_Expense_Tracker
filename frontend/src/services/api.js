@@ -69,7 +69,6 @@ export const mlAPI = {
 export const emailAPI = {
   getPreferences: () => API.get('/email/preferences'),
   updatePreferences: (data) => API.put('/email/preferences', data),
-  testConnection: () => API.post('/email/test-connection'),
   addRecipient: (data) => API.post('/email/recipients', data),
   updateRecipient: (id, data) => API.put(`/email/recipients/${id}`, data),
   deleteRecipient: (id) => API.delete(`/email/recipients/${id}`),
