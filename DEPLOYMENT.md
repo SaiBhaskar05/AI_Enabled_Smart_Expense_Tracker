@@ -148,30 +148,6 @@ This repository includes a `render.yaml` blueprint. To deploy the Backend & ML s
 4. Enter your `MONGODB_URI` and `FRONTEND_URL` in the prompts.
 5. Click **Apply**.
 
----
-
-## 🐳 Alternative: 1-Command Local/VPS Docker Deployment
-
-If you want to run the full stack on a Linux VPS (AWS EC2, DigitalOcean, Linode) or your local machine with Docker:
-
-```bash
-# 1. Clone repo
-git clone <your-repo-url>
-cd smart-expense-tracker
-
-# 2. Set environment variables (optional: create .env with GEMINI_API_KEY, etc.)
-
-# 3. Start everything with Docker Compose
-docker compose up --build -d
-
-# 4. View running containers
-docker compose ps
-```
-
-The application will be live at:
-- **Frontend Web App**: `http://<your-ip-or-domain>` (Port 80)
-- **Backend API**: `http://<your-ip-or-domain>:5000/api`
-- **ML Microservice**: `http://<your-ip-or-domain>:8000`
 
 ---
 
