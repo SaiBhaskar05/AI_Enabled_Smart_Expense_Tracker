@@ -2,6 +2,8 @@ const nodemailer = require('nodemailer');
 const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
 
+const axios = require('axios');
+
 // Clean and normalize email credentials
 const getEmailCredentials = () => {
   const user = (process.env.EMAIL_USER || '').trim();
@@ -9,27 +11,40 @@ const getEmailCredentials = () => {
   const pass = (process.env.EMAIL_PASSWORD || '').trim().replace(/\s+/g, '');
   const host = (process.env.EMAIL_HOST || 'smtp.gmail.com').trim();
   const rawPort = process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT, 10) : null;
-  const from = (process.env.EMAIL_FROM || `Smart Expense Tracker <${user}>`).trim();
+  const service = (process.env.EMAIL_SERVICE || '').trim().toLowerCase();
+  const resendApiKey = (process.env.RESEND_API_KEY || '').trim();
+  const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
+  const from = (process.env.EMAIL_FROM || `Smart Expense Tracker <${user || 'onboarding@resend.dev'}>`).trim();
 
-  return { user, pass, host, rawPort, from };
+  return { user, pass, host, rawPort, service, resendApiKey, brevoApiKey, from };
 };
 
-// Create transporter with explicit IPv4 and timeout controls for Render cloud compatibility
-const buildTransporter = ({ host, port, secure, user, pass }) => {
+// Create transporter with explicit IPv4 and quick timeout controls for Render cloud compatibility
+const buildTransporter = ({ host, port, secure, user, pass, service }) => {
+  if (service === 'gmail') {
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user, pass },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000
+    });
+  }
+
   return nodemailer.createTransport({
     host,
     port,
-    secure, // true for 465, false for other ports (587, 2525)
+    secure, // true for 465, false for 587 / 2525
     auth: {
       user,
       pass
     },
-    // Force IPv4 resolution to prevent Render IPv6 DNS timeout with smtp.gmail.com
+    // Force IPv4 resolution to prevent Render IPv6 DNS timeout with smtp servers
     family: 4,
     pool: false,
-    connectionTimeout: 12000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
+    connectionTimeout: 7000,
+    greetingTimeout: 7000,
+    socketTimeout: 9000,
     tls: {
       rejectUnauthorized: false,
       minVersion: 'TLSv1.2'
@@ -37,29 +52,48 @@ const buildTransporter = ({ host, port, secure, user, pass }) => {
   });
 };
 
-// Primary and fallback transporter creators
-const createTransporters = () => {
-  const { user, pass, host, rawPort } = getEmailCredentials();
+// Primary, secondary, and tertiary transporter creators
+const createTransporterChain = () => {
+  const { user, pass, host, rawPort, service } = getEmailCredentials();
   
   if (!user || !pass) {
-    return { primary: null, fallback: null };
+    return [];
   }
 
-  // If port is explicitly provided in env
+  const list = [];
+
+  if (service === 'gmail') {
+    list.push({
+      name: 'Gmail Native Service Preset',
+      transporter: buildTransporter({ service: 'gmail', user, pass })
+    });
+  }
+
   if (rawPort) {
-    const isSecure = rawPort === 465;
-    const fallbackPort = isSecure ? 587 : 465;
-    return {
-      primary: buildTransporter({ host, port: rawPort, secure: isSecure, user, pass }),
-      fallback: buildTransporter({ host, port: fallbackPort, secure: !isSecure, user, pass })
-    };
+    list.push({
+      name: `SMTP (${host}:${rawPort})`,
+      transporter: buildTransporter({ host, port: rawPort, secure: rawPort === 465, user, pass })
+    });
   }
 
-  // Default: Try Port 465 (Direct SSL) first, fallback to Port 587 (STARTTLS)
-  return {
-    primary: buildTransporter({ host, port: 465, secure: true, user, pass }),
-    fallback: buildTransporter({ host, port: 587, secure: false, user, pass })
-  };
+  // If host is Gmail or generic, provide multi-port candidates: 465 (SSL), 587 (STARTTLS), and 2525
+  const defaultPorts = rawPort === 465 ? [587, 2525] : rawPort === 587 ? [465, 2525] : [465, 587, 2525];
+  for (const port of defaultPorts) {
+    list.push({
+      name: `SMTP (${host}:${port})`,
+      transporter: buildTransporter({ host, port, secure: port === 465, user, pass })
+    });
+  }
+
+  // Also include Gmail service preset as backup for Gmail accounts
+  if (service !== 'gmail' && (host.includes('gmail') || user.includes('@gmail.com'))) {
+    list.push({
+      name: 'Gmail Service Preset Fallback',
+      transporter: buildTransporter({ service: 'gmail', user, pass })
+    });
+  }
+
+  return list;
 };
 
 // Format currency
@@ -453,62 +487,175 @@ const generateSettlementReminderEmail = async ({ groupName, debtorName, creditor
   return { subject, html: baseTemplate(content, 'Settlement Reminder', { ownerName: creditorName, relation: 'Group Member' }) };
 };
 
-// Verify email transporter connection
-const verifyEmailTransporter = async () => {
-  const { user, pass, host, rawPort } = getEmailCredentials();
-  if (!user || !pass) {
-    return {
-      ok: false,
-      message: 'Email credentials not configured. Please set EMAIL_USER and EMAIL_PASSWORD in environment variables.'
-    };
-  }
-
-  const { primary, fallback } = createTransporters();
-  try {
-    await primary.verify();
-    return {
-      ok: true,
-      message: `SMTP connection verified successfully on primary port (${rawPort || 465}).`,
-      host,
-      user
-    };
-  } catch (primaryErr) {
-    console.warn('⚠️ Primary SMTP verify failed, testing fallback:', primaryErr.message);
-    if (fallback) {
-      try {
-        await fallback.verify();
-        return {
-          ok: true,
-          message: `SMTP connection verified on fallback port (${rawPort === 465 ? 587 : 465}).`,
-          host,
-          user
-        };
-      } catch (fallbackErr) {
-        return {
-          ok: false,
-          message: `SMTP connection failed on both ports. Primary: ${primaryErr.message} | Fallback: ${fallbackErr.message}`,
-          code: primaryErr.code || fallbackErr.code
-        };
-      }
+// Send via Resend HTTPS API (Works 100% on Render without SMTP port blocks)
+const sendViaResend = async ({ resendApiKey, from, to, subject, html }) => {
+  const res = await axios.post(
+    'https://api.resend.com/emails',
+    {
+      from: from.includes('<') ? from : `Smart Expense Tracker <${from}>`,
+      to: Array.isArray(to) ? to : [to],
+      subject,
+      html
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
     }
-    return {
-      ok: false,
-      message: `SMTP connection verification failed: ${primaryErr.message}`,
-      code: primaryErr.code
-    };
-  }
+  );
+  return { messageId: res.data?.id || 'resend-ok', provider: 'Resend API' };
 };
 
-// Send email helper with automatic fallback & error diagnostics
-const sendEmail = async (to, subject, html) => {
-  const { user, pass, from } = getEmailCredentials();
-  
-  if (!user || !pass) {
-    console.warn('⚠️ Email credentials not configured');
-    throw new Error('Email service not configured. Please set EMAIL_USER and EMAIL_PASSWORD in Render environment variables.');
+// Send via Brevo HTTPS API
+const sendViaBrevoApi = async ({ brevoApiKey, from, to, subject, html, user }) => {
+  const senderEmail = user || (from.match(/<([^>]+)>/)?.[1] || from);
+  const res = await axios.post(
+    'https://api.brevo.com/v3/smtp/email',
+    {
+      sender: { email: senderEmail, name: 'Smart Expense Tracker' },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html
+    },
+    {
+      headers: {
+        'api-key': brevoApiKey,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    }
+  );
+  return { messageId: res.data?.messageId || 'brevo-ok', provider: 'Brevo API' };
+};
+
+// Verify email service connection / diagnostics
+const verifyEmailTransporter = async () => {
+  const { user, pass, host, rawPort, resendApiKey, brevoApiKey } = getEmailCredentials();
+
+  // 1. If Resend API Key is configured
+  if (resendApiKey) {
+    try {
+      await axios.get('https://api.resend.com/api-keys', {
+        headers: { Authorization: `Bearer ${resendApiKey}` },
+        timeout: 8000
+      });
+      return {
+        ok: true,
+        message: 'Resend API connection verified successfully (Bypasses Render SMTP port blocks).',
+        host: 'api.resend.com',
+        user: 'Resend API'
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        message: `Resend API key check failed: ${e.response?.data?.message || e.message}`
+      };
+    }
   }
 
-  const { primary, fallback } = createTransporters();
+  // 2. If Brevo API Key is configured
+  if (brevoApiKey) {
+    try {
+      await axios.get('https://api.brevo.com/v3/account', {
+        headers: { 'api-key': brevoApiKey },
+        timeout: 8000
+      });
+      return {
+        ok: true,
+        message: 'Brevo API connection verified successfully.',
+        host: 'api.brevo.com',
+        user: 'Brevo API'
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        message: `Brevo API check failed: ${e.response?.data?.message || e.message}`
+      };
+    }
+  }
+
+  if (!user || !pass) {
+    return {
+      ok: false,
+      message: 'Email credentials not configured. Please set EMAIL_USER and EMAIL_PASSWORD (or RESEND_API_KEY) in Render environment variables.'
+    };
+  }
+
+  const chain = createTransporterChain();
+  const errors = [];
+
+  for (const item of chain) {
+    try {
+      await item.transporter.verify();
+      return {
+        ok: true,
+        message: `SMTP connection verified successfully using ${item.name}.`,
+        host: host || 'smtp.gmail.com',
+        user
+      };
+    } catch (err) {
+      console.warn(`⚠️ [${item.name}] verify failed:`, err.message);
+      errors.push(`${item.name}: ${err.code || err.message}`);
+    }
+  }
+
+  const isTimeout = errors.some(e => e.includes('ETIMEDOUT') || e.includes('timeout') || e.includes('ECONNREFUSED'));
+  let guidance = '';
+  if (isTimeout) {
+    guidance = ' Note: Render blocks standard SMTP ports (465 & 587). To fix this on Render, either: 1) Use an unblocked SMTP port like 2525 (e.g., Brevo SMTP: smtp-relay.brevo.com port 2525), or 2) Set RESEND_API_KEY in Render environment variables (Free 3,000 emails/mo at resend.com).';
+  }
+
+  return {
+    ok: false,
+    message: `SMTP verification failed across all attempted ports. (${errors.join(' | ')}).${guidance}`,
+    code: 'SMTP_UNREACHABLE'
+  };
+};
+
+// Send email helper with multi-transport cascading & API fallbacks
+const sendEmail = async (to, subject, html) => {
+  const { user, pass, from, resendApiKey, brevoApiKey } = getEmailCredentials();
+
+  // Priority 1: Resend HTTPS API (100% reliable on Render free/starter tiers)
+  if (resendApiKey) {
+    try {
+      const res = await sendViaResend({ resendApiKey, from, to, subject, html });
+      console.log(`✉️ Email dispatched via Resend API to ${to} (ID: ${res.messageId})`);
+      return res;
+    } catch (err) {
+      console.error('❌ Resend API dispatch failed:', err.response?.data || err.message);
+      if (!user || !pass) {
+        throw new Error(`Resend API failed: ${err.response?.data?.message || err.message}`);
+      }
+      console.warn('⚠️ Falling back to SMTP chain...');
+    }
+  }
+
+  // Priority 2: Brevo HTTPS API
+  if (brevoApiKey) {
+    try {
+      const res = await sendViaBrevoApi({ brevoApiKey, from, to, subject, html, user });
+      console.log(`✉️ Email dispatched via Brevo API to ${to} (ID: ${res.messageId})`);
+      return res;
+    } catch (err) {
+      console.error('❌ Brevo API dispatch failed:', err.response?.data || err.message);
+      if (!user || !pass) {
+        throw new Error(`Brevo API failed: ${err.response?.data?.message || err.message}`);
+      }
+      console.warn('⚠️ Falling back to SMTP chain...');
+    }
+  }
+
+  if (!user || !pass) {
+    console.warn('⚠️ Email credentials not configured');
+    throw new Error('Email service not configured. Please set EMAIL_USER and EMAIL_PASSWORD (or RESEND_API_KEY) in Render environment variables.');
+  }
+
+  const chain = createTransporterChain();
+  const errors = [];
+
   const mailOptions = {
     from,
     to,
@@ -516,38 +663,31 @@ const sendEmail = async (to, subject, html) => {
     html
   };
 
-  try {
-    const info = await primary.sendMail(mailOptions);
-    console.log(`✉️ Email dispatched successfully to ${to} (Message ID: ${info.messageId})`);
-    return info;
-  } catch (primaryError) {
-    console.warn(`⚠️ Primary SMTP transport failed (${primaryError.code || primaryError.message}). Trying fallback transport...`);
-    
-    // Check for explicit authentication failure
-    if (primaryError.code === 'EAUTH' || (primaryError.message && primaryError.message.includes('Invalid login'))) {
-      const authMsg = 'Gmail SMTP Authentication Failed. Please ensure you are using a 16-character Google App Password (not your regular Gmail password) with 2-Step Verification enabled.';
-      console.error('❌', authMsg, primaryError.message);
-      throw new Error(authMsg);
-    }
-
-    if (fallback) {
-      try {
-        const fallbackInfo = await fallback.sendMail(mailOptions);
-        console.log(`✉️ Email dispatched via fallback transport to ${to} (Message ID: ${fallbackInfo.messageId})`);
-        return fallbackInfo;
-      } catch (fallbackError) {
-        console.error('❌ Fallback SMTP transport also failed:', fallbackError.message);
-        
-        if (fallbackError.code === 'EAUTH') {
-          throw new Error('Gmail SMTP Authentication Failed. Please check your EMAIL_USER and EMAIL_PASSWORD in Render settings.');
-        }
-        
-        throw new Error(`Failed to send email: ${fallbackError.message || primaryError.message}`);
+  for (const item of chain) {
+    try {
+      const info = await item.transporter.sendMail(mailOptions);
+      console.log(`✉️ Email dispatched successfully via [${item.name}] to ${to} (ID: ${info.messageId})`);
+      return info;
+    } catch (error) {
+      console.warn(`⚠️ [${item.name}] dispatch failed: ${error.code || error.message}`);
+      
+      if (error.code === 'EAUTH' || (error.message && error.message.includes('Invalid login'))) {
+        const authMsg = 'Gmail SMTP Authentication Failed. Please ensure you are using a 16-character Google App Password (not your regular Gmail password) with 2-Step Verification enabled.';
+        console.error('❌', authMsg);
+        throw new Error(authMsg);
       }
+      
+      errors.push(`${item.name}: ${error.code || error.message}`);
     }
-
-    throw new Error(`Failed to send email: ${primaryError.message}`);
   }
+
+  const isTimeout = errors.some(e => e.includes('ETIMEDOUT') || e.includes('timeout') || e.includes('ECONNREFUSED'));
+  let guidance = '';
+  if (isTimeout) {
+    guidance = ' Render blocks outbound SMTP ports 465 and 587. To fix this on Render, use port 2525 (e.g. Brevo SMTP: smtp-relay.brevo.com on port 2525) or add RESEND_API_KEY in Render environment variables.';
+  }
+
+  throw new Error(`Failed to send email. All SMTP transports failed (${errors.join(' | ')}).${guidance}`);
 };
 
 // Send report to recipient helper
