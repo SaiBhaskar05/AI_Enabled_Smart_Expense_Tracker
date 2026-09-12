@@ -489,10 +489,18 @@ const generateSettlementReminderEmail = async ({ groupName, debtorName, creditor
 
 // Send via Resend HTTPS API (Works 100% on Render without SMTP port blocks)
 const sendViaResend = async ({ resendApiKey, from, to, subject, html }) => {
+  let sender = from;
+  // Resend requires sending from 'onboarding@resend.dev' or a custom verified domain (not public @gmail.com)
+  if (!sender || sender.includes('@gmail.com') || sender.includes('@yahoo.com') || sender.includes('@outlook.com') || sender.includes('@hotmail.com')) {
+    sender = 'Smart Expense Tracker <onboarding@resend.dev>';
+  } else if (!sender.includes('<')) {
+    sender = `Smart Expense Tracker <${sender}>`;
+  }
+
   const res = await axios.post(
     'https://api.resend.com/emails',
     {
-      from: from.includes('<') ? from : `Smart Expense Tracker <${from}>`,
+      from: sender,
       to: Array.isArray(to) ? to : [to],
       subject,
       html
