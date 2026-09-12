@@ -41,10 +41,26 @@ export const EmailReports = () => {
     relationship: 'Family',
     frequency: 'monthly'
   });
+  const [testingSmtp, setTestingSmtp] = useState(false);
 
   useEffect(() => {
     loadPreferences();
   }, []);
+
+  const handleTestConnection = async () => {
+    setTestingSmtp(true);
+    const toastId = toast.loading('Testing SMTP server connection on backend...');
+    try {
+      const res = await emailAPI.testConnection();
+      toast.success(res.data?.message || 'SMTP Connection Verified Successfully!', { id: toastId, duration: 4000 });
+    } catch (error) {
+      console.error('SMTP test failed:', error);
+      const msg = error.response?.data?.message || error.message || 'SMTP connection failed';
+      toast.error(msg, { id: toastId, duration: 6000 });
+    } finally {
+      setTestingSmtp(false);
+    }
+  };
 
   const loadPreferences = async () => {
     try {
@@ -279,7 +295,28 @@ export const EmailReports = () => {
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* Test SMTP Connection Button */}
+            <button
+              className="btn btn-secondary"
+              onClick={handleTestConnection}
+              disabled={testingSmtp}
+              title="Test backend SMTP connection"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '0.75rem 1.25rem',
+                fontSize: '0.925rem',
+                fontWeight: 700,
+                borderRadius: '999px',
+                cursor: 'pointer'
+              }}
+            >
+              <RefreshCw size={16} className={testingSmtp ? 'spin' : ''} />
+              {testingSmtp ? 'Testing Server...' : 'Test SMTP Connection'}
+            </button>
+
             {/* Quick Send Button - Solid Vibrant Active Indigo */}
             <button
               className="btn"

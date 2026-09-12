@@ -2,6 +2,7 @@ const EmailPreference = require('../models/EmailPreference');
 const User = require('../models/User');
 const {
   sendEmail,
+  verifyEmailTransporter,
   generateDailySummary,
   generateWeeklySummary,
   generateMonthlySummary,
@@ -293,6 +294,33 @@ const sendToRecipient = async (req, res) => {
   }
 };
 
+// @desc   Test SMTP connection diagnostics
+// @route  POST /api/email/test-connection
+const testConnection = async (req, res) => {
+  try {
+    const result = await verifyEmailTransporter();
+    if (result.ok) {
+      return res.json({
+        success: true,
+        message: result.message,
+        data: { host: result.host, user: result.user }
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: result.message,
+        code: result.code
+      });
+    }
+  } catch (error) {
+    console.error('Test connection error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to verify email configuration'
+    });
+  }
+};
+
 module.exports = {
   getPreferences,
   updatePreferences,
@@ -302,6 +330,7 @@ module.exports = {
   sendDailySummary,
   sendWeeklySummary,
   sendMonthlySummary,
-  sendToRecipient
+  sendToRecipient,
+  testConnection
 };
 

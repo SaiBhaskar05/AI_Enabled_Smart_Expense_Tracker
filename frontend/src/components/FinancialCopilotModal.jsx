@@ -29,6 +29,23 @@ export const FinancialCopilotModal = () => {
     }, 280);
   };
 
+  // Handle body scroll lock & Escape key
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+      const handleKeyDown = (e) => {
+        if (e.key === 'Escape') handleClose();
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        document.body.style.overflow = '';
+        window.removeEventListener('keydown', handleKeyDown);
+      };
+    } else {
+      document.body.style.overflow = '';
+    }
+  }, [isOpen]);
+
   // Auto-collapse launcher button into compact icon after 3 seconds
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -219,7 +236,8 @@ export const FinancialCopilotModal = () => {
                   </h3>
                   <div className="copilot-status-indicator">
                     <span className="copilot-status-dot" />
-                    <span>Real-time Financial Snapshot Active</span>
+                    <span className="copilot-status-text-full">Real-time Financial Snapshot Active</span>
+                    <span className="copilot-status-text-compact">Active</span>
                   </div>
                 </div>
               </div>

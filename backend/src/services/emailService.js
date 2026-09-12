@@ -2,32 +2,64 @@ const nodemailer = require('nodemailer');
 const Expense = require('../models/Expense');
 const Budget = require('../models/Budget');
 
-// Create reusable transporter
-const createTransporter = () => {
-  const isGmail = (process.env.EMAIL_HOST || '').includes('gmail') || (process.env.EMAIL_USER || '').includes('@gmail.com');
+// Clean and normalize email credentials
+const getEmailCredentials = () => {
+  const user = (process.env.EMAIL_USER || '').trim();
+  // Strip any accidental spaces from App Passwords (e.g., "abcd efgh ijkl mnop")
+  const pass = (process.env.EMAIL_PASSWORD || '').trim().replace(/\s+/g, '');
+  const host = (process.env.EMAIL_HOST || 'smtp.gmail.com').trim();
+  const rawPort = process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT, 10) : null;
+  const from = (process.env.EMAIL_FROM || `Smart Expense Tracker <${user}>`).trim();
 
-  if (isGmail) {
-    return nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
-      }
-    });
-  }
+  return { user, pass, host, rawPort, from };
+};
 
+// Create transporter with explicit IPv4 and timeout controls for Render cloud compatibility
+const buildTransporter = ({ host, port, secure, user, pass }) => {
   return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.EMAIL_PORT) || 587,
-    secure: parseInt(process.env.EMAIL_PORT) === 465,
+    host,
+    port,
+    secure, // true for 465, false for other ports (587, 2525)
     auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASSWORD
+      user,
+      pass
     },
+    // Force IPv4 resolution to prevent Render IPv6 DNS timeout with smtp.gmail.com
+    family: 4,
+    pool: false,
+    connectionTimeout: 12000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     tls: {
-      rejectUnauthorized: false
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1.2'
     }
   });
+};
+
+// Primary and fallback transporter creators
+const createTransporters = () => {
+  const { user, pass, host, rawPort } = getEmailCredentials();
+  
+  if (!user || !pass) {
+    return { primary: null, fallback: null };
+  }
+
+  // If port is explicitly provided in env
+  if (rawPort) {
+    const isSecure = rawPort === 465;
+    const fallbackPort = isSecure ? 587 : 465;
+    return {
+      primary: buildTransporter({ host, port: rawPort, secure: isSecure, user, pass }),
+      fallback: buildTransporter({ host, port: fallbackPort, secure: !isSecure, user, pass })
+    };
+  }
+
+  // Default: Try Port 465 (Direct SSL) first, fallback to Port 587 (STARTTLS)
+  return {
+    primary: buildTransporter({ host, port: 465, secure: true, user, pass }),
+    fallback: buildTransporter({ host, port: 587, secure: false, user, pass })
+  };
 };
 
 // Format currency
@@ -421,19 +453,101 @@ const generateSettlementReminderEmail = async ({ groupName, debtorName, creditor
   return { subject, html: baseTemplate(content, 'Settlement Reminder', { ownerName: creditorName, relation: 'Group Member' }) };
 };
 
-// Send email helper
-const sendEmail = async (to, subject, html) => {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.warn('⚠️ Email credentials not configured');
-    throw new Error('Email service not configured. Please set EMAIL_USER and EMAIL_PASSWORD in .env');
+// Verify email transporter connection
+const verifyEmailTransporter = async () => {
+  const { user, pass, host, rawPort } = getEmailCredentials();
+  if (!user || !pass) {
+    return {
+      ok: false,
+      message: 'Email credentials not configured. Please set EMAIL_USER and EMAIL_PASSWORD in environment variables.'
+    };
   }
-  const transporter = createTransporter();
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || `Smart Expense Tracker <${process.env.EMAIL_USER}>`,
+
+  const { primary, fallback } = createTransporters();
+  try {
+    await primary.verify();
+    return {
+      ok: true,
+      message: `SMTP connection verified successfully on primary port (${rawPort || 465}).`,
+      host,
+      user
+    };
+  } catch (primaryErr) {
+    console.warn('⚠️ Primary SMTP verify failed, testing fallback:', primaryErr.message);
+    if (fallback) {
+      try {
+        await fallback.verify();
+        return {
+          ok: true,
+          message: `SMTP connection verified on fallback port (${rawPort === 465 ? 587 : 465}).`,
+          host,
+          user
+        };
+      } catch (fallbackErr) {
+        return {
+          ok: false,
+          message: `SMTP connection failed on both ports. Primary: ${primaryErr.message} | Fallback: ${fallbackErr.message}`,
+          code: primaryErr.code || fallbackErr.code
+        };
+      }
+    }
+    return {
+      ok: false,
+      message: `SMTP connection verification failed: ${primaryErr.message}`,
+      code: primaryErr.code
+    };
+  }
+};
+
+// Send email helper with automatic fallback & error diagnostics
+const sendEmail = async (to, subject, html) => {
+  const { user, pass, from } = getEmailCredentials();
+  
+  if (!user || !pass) {
+    console.warn('⚠️ Email credentials not configured');
+    throw new Error('Email service not configured. Please set EMAIL_USER and EMAIL_PASSWORD in Render environment variables.');
+  }
+
+  const { primary, fallback } = createTransporters();
+  const mailOptions = {
+    from,
     to,
     subject,
     html
-  });
+  };
+
+  try {
+    const info = await primary.sendMail(mailOptions);
+    console.log(`✉️ Email dispatched successfully to ${to} (Message ID: ${info.messageId})`);
+    return info;
+  } catch (primaryError) {
+    console.warn(`⚠️ Primary SMTP transport failed (${primaryError.code || primaryError.message}). Trying fallback transport...`);
+    
+    // Check for explicit authentication failure
+    if (primaryError.code === 'EAUTH' || (primaryError.message && primaryError.message.includes('Invalid login'))) {
+      const authMsg = 'Gmail SMTP Authentication Failed. Please ensure you are using a 16-character Google App Password (not your regular Gmail password) with 2-Step Verification enabled.';
+      console.error('❌', authMsg, primaryError.message);
+      throw new Error(authMsg);
+    }
+
+    if (fallback) {
+      try {
+        const fallbackInfo = await fallback.sendMail(mailOptions);
+        console.log(`✉️ Email dispatched via fallback transport to ${to} (Message ID: ${fallbackInfo.messageId})`);
+        return fallbackInfo;
+      } catch (fallbackError) {
+        console.error('❌ Fallback SMTP transport also failed:', fallbackError.message);
+        
+        if (fallbackError.code === 'EAUTH') {
+          throw new Error('Gmail SMTP Authentication Failed. Please check your EMAIL_USER and EMAIL_PASSWORD in Render settings.');
+        }
+        
+        throw new Error(`Failed to send email: ${fallbackError.message || primaryError.message}`);
+      }
+    }
+
+    throw new Error(`Failed to send email: ${primaryError.message}`);
+  }
 };
 
 // Send report to recipient helper
@@ -454,6 +568,7 @@ const sendReportToRecipient = async ({ to, recipientName, relationship, ownerId,
 
 module.exports = {
   sendEmail,
+  verifyEmailTransporter,
   generateDailySummary,
   generateWeeklySummary,
   generateMonthlySummary,

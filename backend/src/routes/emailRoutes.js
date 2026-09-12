@@ -8,7 +8,8 @@ const {
   sendDailySummary,
   sendWeeklySummary,
   sendMonthlySummary,
-  sendToRecipient
+  sendToRecipient,
+  testConnection
 } = require('../controllers/emailController');
 const { protect } = require('../middleware/auth');
 
@@ -17,6 +18,9 @@ router.use(protect);
 
 router.get('/preferences', getPreferences);
 router.put('/preferences', updatePreferences);
+
+// Diagnostic test
+router.post('/test-connection', testConnection);
 
 // Recipient management
 router.post('/recipients', addRecipient);
