@@ -519,11 +519,15 @@ const sendViaResend = async ({ resendApiKey, from, to, subject, html }) => {
 // Send via Brevo HTTPS API
 const sendViaBrevoApi = async ({ brevoApiKey, from, to, subject, html, user }) => {
   const senderEmail = user || (from.match(/<([^>]+)>/)?.[1] || from);
+  const recipients = Array.isArray(to)
+    ? to.map(r => (typeof r === 'string' ? { email: r.trim() } : { email: r.email }))
+    : [{ email: to.trim() }];
+
   const res = await axios.post(
     'https://api.brevo.com/v3/smtp/email',
     {
       sender: { email: senderEmail, name: 'Smart Expense Tracker' },
-      to: [{ email: to }],
+      to: recipients,
       subject,
       htmlContent: html
     },
