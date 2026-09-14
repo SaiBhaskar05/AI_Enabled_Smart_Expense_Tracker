@@ -222,7 +222,7 @@ const generateWeeklySummary = async (userId, userName, recipientInfo = null) => 
     ]),
     Expense.aggregate([
       { $match: { userId, date: { $gte: startOfWeek } } },
-      { $group: { _id: { $dateToString: { format: '%a', date: '$date' } }, total: { $sum: '$amount' } } }
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, total: { $sum: '$amount' } } }
     ])
   ]);
 
